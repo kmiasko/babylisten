@@ -1,7 +1,7 @@
 """Detectors: pure functions and state machines, samples in, events out. No I/O except Settings load/save.
 
 Events are dicts {"event", "message", "push", "t", ...extra}; t is the analyzer clock in seconds (the CLI
-turns it into "ts"). They are emitted on state changes only, and pushes are rate-limited here: imcam
+turns it into "ts"). Except "status", they are emitted on state changes only, and pushes are rate-limited here: imcam
 delivers every line it gets.
 
 - noise: block level (RMS dBFS) >= threshold_db for noise_s -> "noise" (push, with cooldown); below
@@ -17,6 +17,9 @@ delivers every line it gets.
   higher), has overtones (not a pure tone) and is at least cry_min_db loud. When cry_fraction of the frames in the last 2 s are cry-like for
   cry_s -> "cry" (push, with cooldown); none for cry_end_s -> "cry_stopped". A "noise" event during a cry
   is not pushed (the cry is). Crying resets the breathing window.
+- status: every status_s seconds of audio (0 = off) -> "status" (never pushed), a snapshot of the current
+  state: level (latest block and mean over STATUS_AVG_S), noise, cry and breathing state, the latest
+  breathing stats and the most recent other event. The timer restarts after a gap.
 """
 
 from __future__ import annotations
@@ -43,6 +46,7 @@ CRY_WINDOW_S = 2.0
 CRY_MIN_OVERTONES = (
     0.1  # share of a frame's power above 1.5 x pitch; pure tones (beeps) have ~0
 )
+STATUS_AVG_S = 10.0  # window of the status line's db_avg
 
 
 @dataclass
@@ -69,6 +73,7 @@ class Settings:
     cry_s: float = 3.0
     cry_end_s: float = 15.0
     cry_cooldown_s: float = 300.0
+    status_s: float = 30.0
 
     @classmethod
     def load(cls, path: str | Path) -> Settings:
@@ -322,6 +327,7 @@ class BreathingDetector:
         self.cand: str | None = None
         self.cand_since = 0.0
         self.last_push: float | None = None
+        self.stats: dict = {}  # of the latest analysis
 
     def reset(self) -> None:
         """Forget the signal (gap or loud noise); the reported state stays."""
@@ -362,6 +368,7 @@ class BreathingDetector:
                 20 * math.log10(max(math.sqrt(np.mean(env**2)), 1e-10)), 1
             ),
         }
+        self.stats = st
         return self._hold(t, self.classify(st), st), st
 
     def _hold(self, t: float, state: str, st: dict) -> list[dict]:
@@ -400,9 +407,14 @@ class Analyzer:
         self.breath = BreathingDetector(s, rate) if s.breathing else None
         self.cry = CryDetector(s, rate) if s.cry else None
         self.last: dict = {}  # diagnostics of the latest block: t, db, and breathing stats if any
+        self.levels: deque[tuple[float, float]] = deque()  # (t, db) over STATUS_AVG_S
+        self.next_status: float | None = None
+        self.last_event: tuple[str, float] | None = None
 
     def feed(self, t: float, x: np.ndarray, new_segment: bool = False) -> list[dict]:
         if new_segment:
+            self.levels.clear()
+            self.next_status = None
             self.noise.reset()
             if self.breath:
                 self.breath.reset()
@@ -424,4 +436,54 @@ class Analyzer:
                 events += ev
                 if st:
                     self.last.update(st)
+        if events:
+            self.last_event = (events[-1]["event"], events[-1]["t"])
+        self.levels.append((t, db))
+        while t - self.levels[0][0] >= STATUS_AVG_S:
+            self.levels.popleft()
+        if self.s.status_s > 0:
+            if self.next_status is None:
+                self.next_status = t + self.s.status_s
+            elif t >= self.next_status:
+                self.next_status = t + self.s.status_s
+                events.append(self.status(t))
         return events
+
+    def status(self, t: float) -> dict:
+        """Snapshot of the current state as a "status" event."""
+        db = self.last["db"]
+        power = np.mean([10 ** (d / 10) for _, d in self.levels])
+        db_avg = round(10 * math.log10(max(float(power), 1e-20)), 1)
+        crying = self.cry.crying if self.cry else None
+        breathing = None
+        if self.breath and self.breath.state:
+            breathing = self.breath.state.removeprefix("breathing_")
+        stats = self.breath.stats if self.breath else {}
+        parts = [f"{db_avg:.0f} dBFS", "loud" if self.noise.loud else "quiet"]
+        if crying:
+            parts.append("crying")
+        elif breathing == "unsure":
+            parts.append("breathing unsure")
+        elif breathing and stats.get("rate_bpm") is not None:
+            parts.append(f"breathing {breathing} {stats['rate_bpm']:.0f}/min")
+        elif breathing:
+            parts.append(f"breathing {breathing}")
+        name, t_ev = self.last_event or (None, None)
+        return event(
+            "status",
+            ", ".join(parts),
+            False,
+            t,
+            db=db,
+            db_avg=db_avg,
+            loud=self.noise.loud,
+            crying=crying,
+            cry_fraction=self.last.get("cry_fraction"),
+            breathing=breathing,
+            rate_bpm=stats.get("rate_bpm"),
+            periodicity=stats.get("periodicity"),
+            depth=stats.get("depth"),
+            band_db=stats.get("band_db"),
+            last_event=name,
+            last_event_age_s=None if t_ev is None else round(t - t_ev, 1),
+        )

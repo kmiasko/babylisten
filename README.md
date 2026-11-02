@@ -23,7 +23,7 @@ babylisten calibrate ~/ImCam/record         # noise floor + breathing stats -> ~
 ```
 
 `live` and `file` take `-v` (log every breathing analysis to stderr) and these overrides:
-`--threshold-db --hysteresis-db --noise-s --quiet-s --cooldown-s --heavy-bpm --heavy-db --no-breathing
+`--threshold-db --hysteresis-db --noise-s --quiet-s --cooldown-s --heavy-bpm --heavy-db --status-s --no-breathing
 --no-cry --config`. The source is always the last argument, as imcam expects:
 
 ```fish
@@ -48,9 +48,21 @@ One JSON object per line on stdout, flushed at once. All logging goes to stderr.
 | `breathing_unsure` | no                      | no periodic breathing found (informational)                            |
 | `cry`              | yes, once per cooldown  | cry-like sound for `cry_s`                                             |
 | `cry_stopped`      | no                      | no cry-like sound for `cry_end_s` after `cry`                          |
+| `status`           | no                      | every `status_s` seconds of audio: a snapshot of the current state     |
 
-Events are emitted on state changes only. `ts` is wall-clock time for streams and media time (s) for files.
+Events other than `status` are emitted on state changes only. `ts` is wall-clock time for streams and media time (s) for files.
 Breathing events also carry `rate_bpm`, `periodicity`, `depth` and `band_db`; `cry` carries `f0_hz`.
+
+`status` lets imcam's event log show the audio state at any moment, e.g. next to a babywatch event:
+
+```json
+{"event": "status", "message": "-42 dBFS, quiet, breathing normal 32/min", "push": false, "db": -43.1, "db_avg": -42.0, "loud": false, "crying": false, "cry_fraction": 0.0, "breathing": "normal", "rate_bpm": 32.1, "periodicity": 0.61, "depth": 0.24, "band_db": -48.3, "last_event": "breathing_normal", "last_event_age_s": 412.5, "ts": "2026-11-02T03:12:45"}
+```
+
+`db` is the latest 0.5 s block, `db_avg` the mean power over the last 10 s. `crying` / `breathing` are `null`
+when that detector is off, `breathing` is `normal`, `heavy`, `unsure` or `null` before the first report, and
+the breathing stats are those of the latest analysis. The first `status` comes `status_s` after the audio
+starts, and again after a stream gap; there are none while no audio arrives.
 
 ## How it works
 
@@ -99,6 +111,7 @@ file with `--config`) < command-line options. The file holds the fields of `dete
 | `cry_s`             | 3       | seconds of cry-like sound for `cry`                  |
 | `cry_end_s`         | 15      | seconds without for `cry_stopped`                    |
 | `cry_cooldown_s`    | 300     | min seconds between pushed `cry` events              |
+| `status_s`          | 30      | seconds between `status` lines, 0 = off              |
 
 `calibrate` runs over `imcam watch --record` clips (or any audio files; files without audio are skipped),
 prints level percentiles and breathing statistics, and saves `threshold_db = median + 20 dB` (`--margin-db`)

@@ -27,11 +27,14 @@ def breathing(seconds, hz, db=-50, seed=0):
     )
 
 
-def run(x, s=None, t0=0.0, an=None):
+def run(x, s=None, t0=0.0, an=None, status=False):
+    """Events of feeding x in blocks; "status" events only when status is set."""
     an = an or Analyzer(s or Settings(), RATE)
     events = []
     for i in range(0, len(x) - BLOCK + 1, BLOCK):
         events += an.feed(t0 + (i + BLOCK) / RATE, x[i : i + BLOCK])
+    if not status:
+        events = [e for e in events if e["event"] != "status"]
     return events, an
 
 
@@ -226,3 +229,65 @@ def test_crying_resets_breathing_window():
     x = np.concatenate([breathing(40, 0.5), cry(5, -50) + breathing(5, 0.5)])
     _, an = run(x)
     assert len(an.breath.env) == 0
+
+
+def statuses(events):
+    return [e for e in events if e["event"] == "status"]
+
+
+def test_status_every_status_s():
+    events, _ = run(pink(95, -60), Settings(breathing=False, cry=False), status=True)
+    st = statuses(events)
+    assert [e["t"] for e in st] == [30.5, 60.5, 90.5]
+    assert all(e["push"] is False for e in st)
+    assert st[0]["db"] == pytest.approx(-60, abs=5)  # one block of pink noise
+    assert st[0]["db_avg"] == pytest.approx(-60, abs=1)
+    assert st[0]["loud"] is False
+    assert st[0]["crying"] is None and st[0]["breathing"] is None
+    assert st[0]["last_event"] is None and st[0]["last_event_age_s"] is None
+    assert st[0]["message"] == "%.0f dBFS, quiet" % st[0]["db_avg"]
+
+
+def test_status_off():
+    events, _ = run(pink(65, -60), Settings(status_s=0), status=True)
+    assert statuses(events) == []
+
+
+def test_status_reports_breathing_and_last_event():
+    events, _ = run(breathing(95, 0.5), status=True)
+    st = statuses(events)[-1]
+    assert st["breathing"] == "normal"
+    assert st["rate_bpm"] == pytest.approx(30, rel=0.1)
+    assert {"periodicity", "depth", "band_db", "cry_fraction"} <= st.keys()
+    assert st["crying"] is False
+    assert st["last_event"] == "breathing_normal"
+    normal = next(e for e in events if e["event"] == "breathing_normal")
+    assert st["last_event_age_s"] == pytest.approx(st["t"] - normal["t"])
+    assert st["message"].endswith(", quiet, breathing normal 30/min")
+
+
+def test_status_loud_and_db_avg_window():
+    x = np.concatenate([pink(20, -60, 1), pink(11, -20, 2)])
+    events, _ = run(x, Settings(breathing=False, cry=False), status=True)
+    (st,) = statuses(events)
+    assert st["loud"] is True
+    assert st["db_avg"] == pytest.approx(
+        -20, abs=1
+    )  # the quiet part is older than 10 s
+    assert st["message"].endswith("dBFS, loud")
+
+
+def test_status_crying_message():
+    events, _ = run(cry(31, -30), Settings(breathing=False), status=True)
+    (st,) = statuses(events)
+    assert st["crying"] is True
+    assert st["message"].endswith(", crying")
+
+
+def test_status_timer_restarts_after_gap():
+    an = Analyzer(Settings(breathing=False, cry=False), RATE)
+    q = pink(25, -60)
+    run(q, an=an)
+    an.feed(100.5, q[:BLOCK], new_segment=True)
+    events, _ = run(pink(35, -60), t0=100.5, an=an, status=True)
+    assert [e["t"] for e in statuses(events)] == [130.5]

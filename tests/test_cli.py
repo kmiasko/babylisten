@@ -35,10 +35,11 @@ def clip(tmp_path_factory):
     return p
 
 
-def lines(out):
+def lines(out, status=False):
+    """Events on stdout; "status" lines only when status is set."""
     evs = [json.loads(line) for line in out.splitlines()]
     assert all(isinstance(e["event"], str) for e in evs)
-    return evs
+    return [e for e in evs if status or e["event"] != "status"]
 
 
 def test_file(clip, tmp_path):
@@ -50,6 +51,15 @@ def test_file(clip, tmp_path):
     assert evs[0]["rate_bpm"] == pytest.approx(30, rel=0.1)
     assert evs[1]["push"] is True
     assert evs[1]["ts"] == pytest.approx(47, abs=1.5)
+
+
+def test_file_status(clip, tmp_path):
+    r = babylisten("file", str(clip), "--status-s", "20", config=tmp_path / "none.json")
+    assert r.returncode == 0, r.stderr
+    st = [e for e in lines(r.stdout, status=True) if e["event"] == "status"]
+    assert len(st) in (2, 3), st
+    assert st[0]["ts"] == pytest.approx(20, abs=1)
+    assert st[0]["push"] is False and "dBFS" in st[0]["message"]
 
 
 def test_file_without_audio(tmp_path):

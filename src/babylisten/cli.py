@@ -35,6 +35,7 @@ OVERRIDES = {  # option -> Settings field
     "cooldown_s": "noise_cooldown_s",
     "heavy_bpm": "heavy_bpm",
     "heavy_db": "heavy_db",
+    "status_s": "status_s",
 }
 
 
@@ -60,6 +61,9 @@ def _settings_args(p: argparse.ArgumentParser) -> None:
         "--heavy-db",
         type=float,
         help="dB above the calibrated breathing level for heavy",
+    )
+    g.add_argument(
+        "--status-s", type=float, help="seconds between 'status' lines, 0 = off"
     )
     g.add_argument("--no-breathing", action="store_true", help="no breathing events")
     g.add_argument("--no-cry", action="store_true", help="no cry events")
