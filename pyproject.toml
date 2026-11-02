@@ -1,0 +1,30 @@
+[project]
+name = "babylisten"
+version = "0.1.0"
+description = "Baby-room audio analyzer for imcam: noise and breathing events as JSON lines"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Krzysztof Miąsko" }]
+dependencies = [
+    "av>=12",
+    "numpy>=1.26",
+    "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+dev = ["ruff"]
+
+[project.scripts]
+babylisten = "babylisten.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/babylisten"]
+
+[tool.uv]
+package = true
